@@ -1,0 +1,5 @@
+your-project-folder/
+├── api/
+│   └── index.py
+├── requirements.txt
+└── vercel.json
