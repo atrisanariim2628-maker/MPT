@@ -2,5 +2,5 @@ flask
 pandas
 numpy
 yfinance
-pypfopt
+pyportfolioopt
 cvxpy
