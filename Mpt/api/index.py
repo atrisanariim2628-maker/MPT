@@ -45,17 +45,34 @@ def optimize():
     end = request.args.get("end", DEFAULT_END).strip() or DEFAULT_END
 
     try:
-        downloaded = yf.download(tickers, start=start, end=end, progress=False)
-        if downloaded.empty or "Close" not in downloaded:
-            return jsonify({"error": "No price data returned for the given tickers and date range."}), 400
+        # Download tickers individually to avoid batch rate-limit failures on shared IPs
+        series_list = []
+        failed = []
+        for ticker in tickers:
+            try:
+                raw = yf.download(
+                    ticker, start=start, end=end,
+                    progress=False, threads=False, auto_adjust=True
+                )
+                if raw.empty:
+                    failed.append(ticker)
+                    continue
+                close_col = "Close" if "Close" in raw.columns else raw.columns[0]
+                s = raw[close_col].dropna()
+                s.name = ticker
+                series_list.append(s)
+            except Exception:
+                failed.append(ticker)
 
-        df = downloaded["Close"]
-        if isinstance(df, pd.Series):
-            df = df.to_frame(name=tickers[0])
+        if len(series_list) < 2:
+            msg = "Not enough valid ticker data to optimize portfolio."
+            if failed:
+                msg += f" Failed/delisted tickers: {', '.join(failed)}."
+            return jsonify({"error": msg}), 400
 
-        df = df.dropna(axis=1, how="all").dropna(axis=0, how="any")
+        df = pd.concat(series_list, axis=1).dropna(axis=0, how="any")
         if df.empty or len(df.columns) < 2:
-            return jsonify({"error": "Not enough valid ticker data to optimize portfolio."}), 400
+            return jsonify({"error": "Not enough overlapping price data across tickers for the given date range."}), 400
 
         mu = expected_returns.mean_historical_return(df)
         S = risk_models.sample_cov(df)
