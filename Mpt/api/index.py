@@ -93,9 +93,20 @@ def optimize():
         mu = expected_returns.mean_historical_return(df)
         S = risk_models.sample_cov(df)
         ef = EfficientFrontier(mu, S)
-        ef.max_sharpe()
+
+        # Try Max-Sharpe with India risk-free rate (~6.5% RBI repo rate)
+        # Fall back to Min-Volatility if no asset beats risk-free rate
+        INDIA_RF = 0.065
+        optimization_used = "max_sharpe"
+        try:
+            ef.max_sharpe(risk_free_rate=INDIA_RF)
+        except Exception:
+            ef = EfficientFrontier(mu, S)   # reset after failed solve
+            ef.min_volatility()
+            optimization_used = "min_volatility"
+
         cleaned_weights = ef.clean_weights()
-        expected_return, volatility, sharpe = ef.portfolio_performance()
+        expected_return, volatility, sharpe = ef.portfolio_performance(risk_free_rate=INDIA_RF)
 
         weights_formatted = {
             str(ticker): round(float(weight) * 100, 2)
@@ -114,6 +125,7 @@ def optimize():
         return jsonify({
             "tickers_used": list(df.columns),
             "tickers_skipped": failed,
+            "optimization": optimization_used,
             "weights": weights_formatted,
             "allocation": {str(k): int(v) for k, v in allocation.items()},
             "leftover_cash": round(float(leftover), 2),
