@@ -49,19 +49,28 @@ def optimize():
         series_list = []
         failed = []
         for ticker in tickers:
-            try:
-                raw = yf.download(
-                    ticker, start=start, end=end,
-                    progress=False, threads=False, auto_adjust=True
-                )
-                if raw.empty:
-                    failed.append(ticker)
+            s = None
+            for attempt in range(3):  # retry up to 3 times per ticker
+                try:
+                    import time as _time
+                    if attempt > 0:
+                        _time.sleep(2 ** attempt)  # 2s, 4s back-off
+                    raw = yf.download(
+                        ticker, start=start, end=end,
+                        progress=False, threads=False, auto_adjust=True
+                    )
+                    if raw.empty:
+                        continue
+                    close_col = "Close" if "Close" in raw.columns else raw.columns[0]
+                    series = raw[close_col].dropna()
+                    series.name = ticker
+                    s = series
+                    break
+                except Exception:
                     continue
-                close_col = "Close" if "Close" in raw.columns else raw.columns[0]
-                s = raw[close_col].dropna()
-                s.name = ticker
+            if s is not None and not s.empty:
                 series_list.append(s)
-            except Exception:
+            else:
                 failed.append(ticker)
 
         if len(series_list) < 2:
