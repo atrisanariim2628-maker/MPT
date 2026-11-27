@@ -1,4 +1,4 @@
-import re
+import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import pandas as pd
@@ -31,6 +31,8 @@ def health():
 def optimize():
     raw_tickers = request.args.get("tickers", DEFAULT_TICKERS)
     tickers = [t.strip() for t in raw_tickers.split(",") if t.strip()]
+    # Ensure NSE suffix .NS for tickers without a dot
+    tickers = [t if "." in t else f"{t}.NS" for t in tickers]
     if len(tickers) < 2:
         return jsonify({"error": "Provide at least 2 comma-separated tickers."}), 400
 
@@ -42,7 +44,18 @@ def optimize():
         return jsonify({"error": "Invalid 'amount' parameter; must be a positive number."}), 400
 
     start = request.args.get("start", DEFAULT_START).strip() or DEFAULT_START
-    end = request.args.get("end", DEFAULT_END).strip() or DEFAULT_END
+    end_input = request.args.get("end", DEFAULT_END).strip() or DEFAULT_END
+    # Clamp end date to today to avoid future dates causing empty data
+    try:
+        end_date = datetime.datetime.strptime(end_input, "%Y-%m-%d").date()
+        today = datetime.date.today()
+        if end_date > today:
+            end = today.isoformat()
+        else:
+            end = end_input
+    except Exception:
+        # If parsing fails, fallback to default end date
+        end = DEFAULT_END
 
     try:
         downloaded = yf.download(tickers, start=start, end=end, progress=False)
