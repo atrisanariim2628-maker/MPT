@@ -1,4 +1,5 @@
 import re
+import time
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import pandas as pd
@@ -20,6 +21,28 @@ DEFAULT_TICKERS = "RELIANCE.NS,TCS.NS,HDFCBANK.NS,INFY.NS,ITC.NS,TATAMOTORS.NS"
 DEFAULT_AMOUNT = 100000.0
 DEFAULT_START = "2023-01-01"
 DEFAULT_END = "2026-01-01"
+
+
+def fetch_ticker(ticker, start, end, retries=3):
+    """Fetch closing prices for a single ticker using Ticker.history(),
+    with exponential back-off retries. Returns a named Series or None."""
+    for attempt in range(retries):
+        try:
+            if attempt > 0:
+                time.sleep(2 ** attempt)   # 2s, 4s
+            t = yf.Ticker(ticker)
+            hist = t.history(start=start, end=end, auto_adjust=True, timeout=20)
+            if hist.empty or "Close" not in hist.columns:
+                continue
+            s = hist["Close"].dropna()
+            if s.empty:
+                continue
+            s.index = pd.to_datetime(s.index).tz_localize(None)
+            s.name = ticker
+            return s
+        except Exception:
+            continue
+    return None
 
 
 @app.route("/", methods=["GET"])
@@ -45,30 +68,13 @@ def optimize():
     end = request.args.get("end", DEFAULT_END).strip() or DEFAULT_END
 
     try:
-        # Download tickers individually to avoid batch rate-limit failures on shared IPs
         series_list = []
         failed = []
-        for ticker in tickers:
-            s = None
-            for attempt in range(3):  # retry up to 3 times per ticker
-                try:
-                    import time as _time
-                    if attempt > 0:
-                        _time.sleep(2 ** attempt)  # 2s, 4s back-off
-                    raw = yf.download(
-                        ticker, start=start, end=end,
-                        progress=False, threads=False, auto_adjust=True
-                    )
-                    if raw.empty:
-                        continue
-                    close_col = "Close" if "Close" in raw.columns else raw.columns[0]
-                    series = raw[close_col].dropna()
-                    series.name = ticker
-                    s = series
-                    break
-                except Exception:
-                    continue
-            if s is not None and not s.empty:
+        for i, ticker in enumerate(tickers):
+            if i > 0:
+                time.sleep(0.4)   # small inter-ticker delay to avoid burst throttling
+            s = fetch_ticker(ticker, start, end)
+            if s is not None:
                 series_list.append(s)
             else:
                 failed.append(ticker)
@@ -76,10 +82,11 @@ def optimize():
         if len(series_list) < 2:
             msg = "Not enough valid ticker data to optimize portfolio."
             if failed:
-                msg += f" Failed/delisted tickers: {', '.join(failed)}."
+                msg += f" Tickers with no data (possibly delisted or rate-limited): {', '.join(failed)}."
             return jsonify({"error": msg}), 400
 
-        df = pd.concat(series_list, axis=1).dropna(axis=0, how="any")
+        df = pd.concat(series_list, axis=1)
+        df = df.dropna(axis=1, how="all").dropna(axis=0, how="any")
         if df.empty or len(df.columns) < 2:
             return jsonify({"error": "Not enough overlapping price data across tickers for the given date range."}), 400
 
@@ -105,6 +112,8 @@ def optimize():
         allocation, leftover = da.lp_portfolio()
 
         return jsonify({
+            "tickers_used": list(df.columns),
+            "tickers_skipped": failed,
             "weights": weights_formatted,
             "allocation": {str(k): int(v) for k, v in allocation.items()},
             "leftover_cash": round(float(leftover), 2),
